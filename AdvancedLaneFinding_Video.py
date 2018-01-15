@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Sun Jan  7 23:03:23 2018
-
-@author: laljarus
-"""
-
 import pickle
 import cv2
 import numpy as np
@@ -59,7 +52,7 @@ def mag_thresh(image, sobel_kernel=3, mag_thresh=(0, 255)):
     
 
 def dir_threshold(image, sobel_kernel=3, thresh=(0, np.pi/2)):
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     
     sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0,ksize=sobel_kernel)
     sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1,ksize=sobel_kernel)
@@ -379,11 +372,100 @@ def FindRadiusOfCurvature(ploty,left_fitx,right_fitx,ym_per_pix = 30/720,xm_per_
     
     return left_curverad,right_curverad
 
-def displayImage(undist,ploty,left_fitx,right_fitx,Minv,left_curverad,right_curverad,difference_meters, warp = False):
+def PlausiblityCheck(left_fit,right_fit,left_curverad,right_curverad):
+    y_max = int(max(TestObj.ploty))
+    y_min = int(min(TestObj.ploty))
+    width_difference_bottom = np.polyval(right_fit,y_max) - np.polyval(left_fit,y_max)
+    width_difference_top = np.polyval(right_fit,y_min) - np.polyval(left_fit,y_min)
+    
+    if left_fit[0]>0 and right_fit[0]>0 :        
+        if  width_difference_bottom > 100 and width_difference_top > 100:            
+            result = True
+        else:
+            result = False
+        
+    elif left_fit[0]<0 and right_fit[0]<0:
+        if width_difference_bottom > 100 and width_difference_top > 100:            
+            result = True 
+        else:
+            result = False
+        
+    else:
+        result = False
+        
+    return result
+
+def correctPerspectiveTransform(ploty,left_fit,right_fit,src,dst,Minv):
+    
+    y1 = dst[0][1]
+    y2 = dst[1][1]
+    
+    slope_left = 2*left_fit[0]*y1+left_fit[1]
+    slope_right = 2*right_fit[0]*y1+right_fit[1]
+    
+    offset = 0
+    
+    if abs(slope_left) <0.1 and abs(slope_right)<0.1:
+        
+        src = src
+        dst = dst
+        
+    elif abs(slope_left) > abs(slope_right): 
+        
+        # correcting left lane line in perspective transform since the slope(dx/dy) of left is not zero
+        # It is best to correct perspective transform only on one lane if both the lanes are corrected they counteract
+        # Finding equation of line using old points in the source  matrix
+        slope_src_right = (src[2][0]-src[3][0])/(src[2][1]-src[3][1])
+        const_right =src[3][0] - slope_src_right*src[3][1]
+        # correcting for center of the lane using curve fit
+        x1_right = np.polyval(right_fit,y1)                       
+        x1_left = np.polyval(left_fit,y1)
+        
+        dst = np.array([[x1_left,y1],[x1_left,y2],[x1_right,y2],[x1_right,y1]],dtype = 'int32')
+        
+        x2_left_dst = np.polyval(left_fit,y2)
+        src_left_2 = np.dot(Minv,[x2_left_dst,y2,1])
+        src_left_2 = src_left_2/src_left_2[2]
+        
+        x2_right = src_left_2[1]*slope_src_right + const_right
+        
+        src = np.array([[x1_left,y1],[src_left_2[0],src_left_2[1]],[x2_right,src_left_2[1]],[x1_right,y1]],dtype = 'int32')            
+
+    elif abs(slope_right) > abs(slope_left):
+        
+        # correcting left lane line in perspective transform since the slope(dx/dy) of left is not zero
+        # It is best to correct perspective transform only on one lane if both the lanes are corrected they counteract
+        # Finding equation of line using old points in the source  matrix
+        slope_src_left = (src[1][0]-src[0][0])/(src[1][1]-src[0][1])
+        const_left =src[0][0] - slope_src_left*src[0][1]
+        # correcting for center of the lane using curve fit
+        x1_right = np.polyval(right_fit,y1)                       
+        x1_left = np.polyval(left_fit,y1)
+        
+        dst = np.array([[x1_left,y1],[x1_left,y2],[x1_right,y2],[x1_right,y1]],dtype = 'int32')
+        
+        x2_right_dst = np.polyval(right_fit,y2)
+        src_right_3 = np.dot(Minv,[x2_right_dst,y2,1])
+        src_right_3 = src_right_3/src_right_3[2]
+        
+        x2_left = src_right_3[1]*slope_src_left + const_left
+        
+        src = np.array([[x1_left,y1],[x2_left,src_right_3[1]],[src_right_3[0],src_right_3[1]],[x1_right,y1]],dtype = 'int32')      
+           
+      
+    
+    return src,dst
+
+def displayImage(undist,ploty,left_fitx,right_fitx,Minv,left_curverad,right_curverad,difference_meters,src, warp = False):
     
     # Create an image to draw the lines on
     color_warp = np.zeros_like(undist).astype(np.uint8)
     #color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
+    
+    Lines_Img = np.zeros_like(undist).astype(np.uint8)       
+    cv2.line(Lines_Img,(src[0][0],src[0][1]),(src[1][0],src[1][1]),(255,0,0),5)
+    cv2.line(Lines_Img,(src[2][0],src[2][1]),(src[3][0],src[3][1]),(255,0,0),5)
+       
     
     # Recast the x and y points into usable format for cv2.fillPoly()
     pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
@@ -391,17 +473,19 @@ def displayImage(undist,ploty,left_fitx,right_fitx,Minv,left_curverad,right_curv
     pts = np.hstack((pts_left, pts_right))
     
     # Draw the lane onto the warped blank image
-    cv2.fillPoly(color_warp, np.int_([pts]), (0,255, 0))
-    
+    cv2.fillPoly(color_warp, np.int_([pts]), (0,255, 0))    
+       
     if warp == False:
         # Warp the blank back to original image space using inverse perspective matrix (Minv)
         newwarp = cv2.warpPerspective(color_warp, Minv, (undist.shape[1], undist.shape[0])) 
         # Combine the result with the original image
+        newwarp = cv2.addWeighted(newwarp,1,Lines_Img,1,0)
         result = cv2.addWeighted(undist, 1, newwarp, 0.3, 0)
     else:
         # Warp the blank back to original image space using inverse perspective matrix (Minv)
         newwarp = cv2.warpPerspective(undist, Minv, (undist.shape[1], undist.shape[0])) 
         # Combine the result with the original image
+        newwarp = cv2.addWeighted(newwarp,1,Lines_Img,1,0)
         result = cv2.addWeighted(newwarp, 1, color_warp, 0.3, 0)
     
     curvature = min(left_curverad,right_curverad)
@@ -411,8 +495,8 @@ def displayImage(undist,ploty,left_fitx,right_fitx,Minv,left_curverad,right_curv
     cv2.putText(result,text1,(10,60), font, 1,(255,255,255),2)
     cv2.putText(result,text2,(10,120), font, 1,(255,255,255),2)
     
-    return color_warp
-    
+    return result
+
 class Test:
     def __init__(self):
         
@@ -421,7 +505,13 @@ class Test:
         self.left_fit = []
         self.right_fit = []
         self.reset = 0
-
+        self.PlausiblityFlag = True
+        self.right_curverad = 0
+        self.left_curverad = 0
+        #self.M = []
+        #self.Minv=[]
+        #self.ploty = []
+        
 with open('CameraCalibration.p','rb') as f:
     data = pickle.load(f)
 mtx = data[1]
@@ -446,9 +536,12 @@ def process_image(img):
     l_binary = hls_select(undist,channel = 'l', thresh=(50, 255))
     
     combined = np.zeros_like(dir_binary)
-    combined[((gradx == 1) & (grady == 1))|((mag_binary == 1) & (dir_binary == 1))|((s_binary == 1)&(l_binary==1))] = 1
+    combined[((gradx == 1) & (grady == 1))|((mag_binary == 1) & (dir_binary == 1))|((s_binary == 1)&(l_binary==1))] = 255
     
-    if TestObj.reset == 0:
+    offset = 25
+    arrOffset = np.array([[-offset,0],[-offset,0],[offset,0],[offset,0]],dtype='int32')
+    
+    if TestObj.reset == 0 :
         
         imshape = img.shape
         width = imshape[1]
@@ -468,23 +561,28 @@ def process_image(img):
         max_line_gap = 20    # maximum gap in pixels between connectable line segments
         [line_img,lines] = hough_lines(masked_edges,rho,theta,threshold,min_line_length,max_line_gap)
         
+        try:
+                
+            mean_line_img,lane_lines =  average_lines(lines,imshape,height_coeff=0.72)                    
+            src = lane_lines + arrOffset
+            #src = lane_lines
+        except:
+            
+            src = TestObj.src
         
-        mean_line_img,lane_lines =  average_lines(lines,imshape,height_coeff=0.7)
-        offset = 25
-        arrOffset = np.array([[-offset,0],[-offset,0],[offset,0],[offset,0]],dtype='int32')
+        #src = np.array([[ 297,  684],[ 487,  518],[ 834,  518],[1179,  684]],dtype = np.int32)
         
-        src = lane_lines + arrOffset
+        x1_dst = src[0][0]
+        x2_dst = src[3][0]
 
-        x1_dst = lane_lines[0][0]
-        x2_dst = lane_lines[3][0]
-
-        y1_dst = lane_lines[0][1]
-        y2_dst = lane_lines[1][1]
+        y1_dst = src[0][1]
+        y2_dst = src[1][1]
 
         dst = np.array([[x1_dst,y1_dst],[x1_dst,y2_dst],[x2_dst,y2_dst],[x2_dst,y1_dst]],dtype='int32')
         
         TestObj.src = src
         TestObj.dst = dst
+        
     
     img_size = (img.shape[1],img.shape[0])
     
@@ -492,34 +590,66 @@ def process_image(img):
     Minv = cv2.getPerspectiveTransform(np.float32(TestObj.dst),np.float32(TestObj.src))
     image_warped = cv2.warpPerspective(combined,M,img_size,flags=cv2.INTER_LINEAR)
     
-    if TestObj.reset == 0 :
-        TestObj.left_fit,TestObj.right_fit,out_windows = FindLanesSlidingWindow(image_warped)
+    #TestObj.M = M
+    #TestObj.Minv = Minv
+    
+    if TestObj.reset == 0:
+        
+        left_fit,right_fit,out_windows = FindLanesSlidingWindow(image_warped)
+    
     else:
-        TestObj.left_fit,TestObj.right_fit = SearchLanes(image_warped,TestObj.left_fit,TestObj.right_fit)
+        try:
+            left_fit,right_fit = SearchLanes(image_warped,TestObj.left_fit,TestObj.right_fit)   
+        except:
+            left_fit,right_fit,out_windows = FindLanesSlidingWindow(image_warped)
+    
+    ploty = np.linspace(0, image_warped.shape[0]-1, image_warped.shape[0] )
+    left_fitx = np.polyval(left_fit,ploty)
+    right_fitx = np.polyval(right_fit,ploty)
+    left_curverad,right_curverad = FindRadiusOfCurvature(ploty,left_fitx,right_fitx)    
+    TestObj.ploty = ploty
+    
+    TestObj.PlausiblityFlag = PlausiblityCheck(left_fit,right_fit,left_curverad,right_curverad)
+    
+    if TestObj.PlausiblityFlag == True or TestObj.reset == 0:
+        TestObj.left_fit = left_fit
+        TestObj.right_fit = right_fit
+        TestObj.left_curverad = left_curverad
+        TestObj.right_curverad = right_curverad         
+        TestObj.M = M
+        TestObj.Minv = Minv
+        
+    
+    #ploty = np.linspace(0, image_warped.shape[0]-1, image_warped.shape[0] )
+    #left_fitx = TestObj.left_fit[0]*ploty**2 + TestObj.left_fit[1]*ploty + TestObj.left_fit[2]
+    left_fitx = np.polyval(TestObj.left_fit,ploty)
+    #right_fitx = TestObj.right_fit[0]*ploty**2 + TestObj.right_fit[1]*ploty + TestObj.right_fit[2]
+    right_fitx = np.polyval(TestObj.right_fit,ploty)
+    
+    
+    
+    center_distance = FindCarCenter(left_fitx,right_fitx,(img.shape[0],img.shape[1]))            
+        
+    result = displayImage(undist, ploty, left_fitx, right_fitx, Minv, left_curverad, right_curverad, TestObj.PlausiblityFlag,(TestObj.src))
+    #result = displayImage(undist, ploty, left_fitx, right_fitx, M, left_curverad, right_curverad,TestObj.PlausiblityFlag,TestObj.dst,warp = True)    
+    
+    if TestObj.PlausiblityFlag == True:
+        TestObj.src,TestObj.dst = correctPerspectiveTransform(ploty,TestObj.left_fit,TestObj.right_fit,TestObj.src,TestObj.dst,Minv)
+        #correctPerspectiveTransform()
     
     TestObj.reset = 1
     
-    ploty = np.linspace(0, image_warped.shape[0]-1, image_warped.shape[0] )
-    left_fitx = TestObj.left_fit[0]*ploty**2 + TestObj.left_fit[1]*ploty + TestObj.left_fit[2]
-    right_fitx = TestObj.right_fit[0]*ploty**2 + TestObj.right_fit[1]*ploty + TestObj.right_fit[2]
-    
-    center_distance = FindCarCenter(left_fitx,right_fitx,(img.shape[0],img.shape[1]))
-    left_curverad,right_curverad = FindRadiusOfCurvature(ploty,left_fitx,right_fitx)
-            
-    #result = displayImage(undist, ploty, left_fitx, right_fitx, Minv, left_curverad, right_curverad, center_distance)
-    result = displayImage(undist, ploty, left_fitx, right_fitx, M, left_curverad, right_curverad, center_distance,warp = True)
-
     return(result)
     
-from moviepy.editor import VideoFileClip
-from IPython.display import HTML
-
-write_output = 'project_video_output_warped.mp4'
-clip1 = VideoFileClip('project_video.mp4')
-
-TestObj = Test()
-write_clip = clip1.fl_image(process_image)
-
-write_clip.write_videofile(write_output, audio=False)
         
+img = cv2.imread('./test_images/test3.jpg')
+#img_2 = cv2.imread('./test_images/test6.jpg')
+TestObj =Test()
+#TestObj.reset = 1
+#output = process_image(img,mtx,dist,TestObj1)
+output = process_image(img)
+#output_2 = process_image(img_2)
 
+f,ax1 = plt.subplots(1,figsize=(24, 9))
+f.tight_layout()
+ax1.imshow(output)
